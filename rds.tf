@@ -19,11 +19,11 @@ resource "aws_db_subnet_group" "autoshop" {
 # banco na porta 5432, sem acesso público.
 resource "aws_security_group" "db" {
   name        = "autoshop-db-access"
-  description = "Permite tráfego Postgres (5432) apenas dos nodes do EKS e de origens explicitamente autorizadas"
+  description = "Allows Postgres traffic (5432) only from EKS nodes and explicitly authorized sources"
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
-    description     = "Postgres a partir dos nodes do EKS e de outras origens autorizadas (ex: lambda-auth)"
+    description     = "Postgres from EKS nodes and other authorized sources (ex: lambda-auth)"
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
