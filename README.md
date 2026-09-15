@@ -80,18 +80,19 @@ Depois do apply, copie os outputs pros repositórios que dependem deles:
 ## Pipeline CI/CD (`.github/workflows/ci-cd.yml`)
 
 1. **terraform-validate** — valida o Terraform em toda PR.
-2. **deploy** — (se a variável de repositório `AWS_DEPLOY_ENABLED=true`)
-   roda `terraform apply` contra a AWS real — desligado por padrão, pra
-   nunca gerar custo sem querer.
+2. **deploy** — aplica `terraform apply` contra a AWS real, controlado
+   pela variável de repositório `AWS_DEPLOY_ENABLED`.
 
 Secrets necessários: `AWS_ROLE_ARN`.
 Variável: `AWS_DEPLOY_ENABLED`.
 
 ## Considerações de produção
 
-- **VPC dedicada**: não implementada (fora do escopo) — usa a VPC default
-  da conta, igual ao `infra-k8s-autoshop`.
-- **State remoto**: não implementado — o state fica local.
-- **Backup**: `backup_retention_period = 1` e `skip_final_snapshot = true`,
-  adequado a um projeto de estudo — numa base de produção real isso seria
-  ajustado junto com `deletion_protection = true`.
+- **Rede**: usa a VPC default da conta (mesma do `infra-k8s-autoshop`).
+  Uma produção real usaria uma VPC dedicada, com sub-redes
+  públicas/privadas segregadas.
+- **State**: gerenciado localmente. Uma equipe com múltiplos
+  colaboradores usaria state remoto (ex: S3 + lock no DynamoDB).
+- **Backup**: `backup_retention_period = 1` e `skip_final_snapshot = true`.
+  Numa base de produção, esses valores seriam maiores, junto com
+  `deletion_protection = true`.
