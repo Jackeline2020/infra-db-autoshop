@@ -2,9 +2,9 @@ name: CI/CD - infra-db
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
 
 jobs:
   terraform-validate:
