@@ -1,4 +1,4 @@
-name: CI/CD - infra-db
+name: CI - infra-db
 
 on:
   push:
@@ -6,32 +6,21 @@ on:
   pull_request:
     branches: [main, develop]
 
+permissions:
+  contents: read
+
 jobs:
+  # Cada banco é uma stack independente, validada no próprio job
   terraform-validate:
+    name: Validar ${{ matrix.stack }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: [os, billing, execution]
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
-      - run: terraform init -backend=false
-      - run: terraform validate
-
-  # Desligado por padrão (mesmo padrão AWS_DEPLOY_ENABLED do resto do
-  # projeto) — evita gerar custo AWS sem querer em todo push.
-  deploy:
-    runs-on: ubuntu-latest
-    needs: terraform-validate
-    if: github.ref == 'refs/heads/main' && vars.AWS_DEPLOY_ENABLED == 'true'
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: us-east-1
-
-      - uses: hashicorp/setup-terraform@v3
-      - run: terraform init
-      - run: terraform apply -auto-approve -var="eks_node_security_group_id=${{ secrets.EKS_NODE_SECURITY_GROUP_ID }}"
+      - run: terraform -chdir=${{ matrix.stack }} fmt -check -recursive
+      - run: terraform -chdir=${{ matrix.stack }} init -backend=false
+      - run: terraform -chdir=${{ matrix.stack }} validate
