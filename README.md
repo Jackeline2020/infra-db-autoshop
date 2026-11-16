@@ -1,98 +1,73 @@
 # infra-db-autoshop
 
-Provisionamento do banco de dados gerenciado (RDS PostgreSQL) usado pela
-aplicação [`app-autoshop`](https://github.com/Jackeline2020/app-autoshop) e
-pela function serverless [`lambda-auth-autoshop`](https://github.com/Jackeline2020/lambda-auth-autoshop).
-Terraform puro — nenhum código de aplicação.
+Bancos de dados dos microsserviços do AutoShop, em Terraform. Cada serviço
+tem o próprio banco e nenhum serviço acessa o banco de outro
+([ADR-008](https://github.com/Jackeline2020/app-autoshop/blob/main/docs/adr/ADR-008-banco-por-servico.md)).
 
-Este é o repositório 3 dos 4 exigidos pela Fase 3 do Tech Challenge. Os
-outros três: [`app-autoshop`](https://github.com/Jackeline2020/app-autoshop)
-(aplicação), [`infra-k8s-autoshop`](https://github.com/Jackeline2020/infra-k8s-autoshop)
-(cluster Kubernetes) e [`lambda-auth-autoshop`](https://github.com/Jackeline2020/lambda-auth-autoshop)
-(autenticação por CPF).
+| Stack | Serviço | Banco | Recursos |
+|---|---|---|---|
+| [`os/`](os) | OS Service ([`app-autoshop`](https://github.com/Jackeline2020/app-autoshop)) | PostgreSQL 16 | Instância RDS `os-db`, security group, segredo `autoshop/os/db` |
+| [`billing/`](billing) | Billing Service ([`billing-autoshop`](https://github.com/Jackeline2020/billing-autoshop)) | PostgreSQL 16 | Instância RDS `billing-db`, security group, segredo `autoshop/billing/db` |
+| [`execution/`](execution) | Execution Service ([`execution-autoshop`](https://github.com/Jackeline2020/execution-autoshop)) | DynamoDB | Tabelas `autoshop-parts`, `autoshop-reservations`, `autoshop-executions`, `autoshop-processed_messages` (com expiração) |
 
-## Por que PostgreSQL (RFC)
-
-A Fase 2 usava DynamoDB. Pra Fase 3, com um banco gerenciado real na AWS,
-a escolha foi PostgreSQL (RDS) em vez de manter DynamoDB: o domínio tem
-relacionamentos (OS → cliente, veículo, peças, serviços) que se beneficiam
-de chaves estrangeiras e transações ACID — em especial a dedução de
-estoque na aprovação de orçamento, onde condições de corrida importam e o
-MVCC do Postgres resolve isso de forma natural. `pgx` é um driver Go de
-qualidade alta, e o RDS Postgres não tem custo de licença (diferente de
-SQL Server). Justificativa completa em
-[`docs/rfc/RFC-001-postgres-database.md`](https://github.com/Jackeline2020/app-autoshop/blob/main/docs/rfc/RFC-001-postgres-database.md)
-(repositório `app-autoshop`) e diagrama ER em
-[`docs/database/er-diagram.md`](https://github.com/Jackeline2020/app-autoshop/blob/main/docs/database/er-diagram.md).
-
-## Arquitetura
+Cada stack tem estado e `apply` próprios: criar, alterar ou destruir um
+banco não afeta os outros. As duas instâncias PostgreSQL usam o mesmo
+módulo ([`modules/postgres`](modules/postgres)), com usuário e senha
+próprios.
 
 ```mermaid
 flowchart LR
-    subgraph DBRepo["infra-db-autoshop (Terraform)"]
-        RDS["aws_db_instance<br/>PostgreSQL 16"]
-        SG["Security Group<br/>libera só 5432 de origens autorizadas"]
-        Secret["Secrets Manager<br/>autoshop/rds/credentials"]
+    subgraph EKS["Cluster EKS (infra-k8s-autoshop)"]
+        OS["OS Service"]
+        BIL["Billing Service"]
+        EXE["Execution Service"]
     end
+    OSDB[("RDS os-db<br/>PostgreSQL")]
+    BILDB[("RDS billing-db<br/>PostgreSQL")]
+    DDB[("DynamoDB<br/>tabelas autoshop-*")]
 
-    EKS["Nodes do EKS<br/>(infra-k8s-autoshop)"]
-    Lambda["Lambda<br/>(lambda-auth-autoshop)"]
-
-    EKS -->|"5432, autorizado via SG"| RDS
-    Lambda -->|"5432, autorizado via SG"| RDS
-    RDS --> Secret
-    Secret -.->|"IRSA (pod) / env var (Lambda)"| EKS
-    Secret -.-> Lambda
+    OS -->|"5432 (security group)"| OSDB
+    BIL -->|"5432 (security group)"| BILDB
+    EXE -->|"IAM (IRSA)"| DDB
 ```
 
-Acesso ao banco é só por security group explícito — sem IP público. Hoje
-autoriza os nodes do EKS (`eks_node_security_group_id`, colado a partir do
-output do `infra-k8s-autoshop`) e, opcionalmente, outras origens (ex: a
-Lambda de autenticação) via `additional_db_ingress_security_group_ids`.
-
-## Tecnologias
-
-- Terraform (provider `aws`)
-- AWS RDS PostgreSQL 16, AWS Secrets Manager
-
-## Pré-requisitos
-
-- Terraform >= 1.5
-- Uma VPC com subnets (usa a VPC default da conta — ver "Considerações")
-- O `infra-k8s-autoshop` já aplicado pelo menos uma vez, pra ter o output
-  `eks_node_security_group_id`
+- **Acesso:** as instâncias RDS não são públicas e só aceitam conexões dos
+  nodes do EKS. O acesso ao DynamoDB é liberado apenas para a role do pod
+  do Execution (IRSA, definida no `infra-k8s-autoshop`).
+- **Esquema:** cada serviço aplica as próprias migrations no deploy.
 
 ## Como aplicar
 
+Pré-requisitos: Terraform >= 1.5, credenciais da AWS e o cluster já
+criado pelo `infra-k8s-autoshop` (o security group dos nodes é usado nas
+regras de acesso dos bancos).
+
 ```bash
-terraform init
-terraform apply \
-  -var="eks_node_security_group_id=<output do infra-k8s-autoshop>"
+SG=$(terraform -chdir=../infra-k8s-autoshop/infra/aws output -raw eks_node_security_group_id)
+
+terraform -chdir=os init
+terraform -chdir=os apply -var="eks_node_security_group_id=$SG"
+
+terraform -chdir=billing init
+terraform -chdir=billing apply -var="eks_node_security_group_id=$SG"
+
+terraform -chdir=execution init
+terraform -chdir=execution apply
 ```
 
-Depois do apply, copie os outputs pros repositórios que dependem deles:
+Saídas usadas nos secrets dos repositórios dos serviços:
 
-| Output | Onde colar |
-|---|---|
-| `rds_endpoint` | Secret `DB_HOST` do `app-autoshop` (usado no ConfigMap do overlay `aws`) |
-| `rds_secret_arn` | Secret `RDS_SECRET_ARN` do `infra-k8s-autoshop` (variável `rds_secret_arn` do Terraform em `infra/aws`) e Terraform do `lambda-auth-autoshop` |
+| Stack | Saída | Secret |
+|---|---|---|
+| `os` | `db_host`, `db_password` | `DB_HOST`, `DB_PASSWORD` do `app-autoshop` |
+| `billing` | `db_host`, `db_password` | `DB_HOST`, `DB_PASSWORD` do `billing-autoshop` |
 
-## Pipeline CI/CD (`.github/workflows/ci-cd.yml`)
+A senha é lida com `terraform output -raw db_password`.
 
-1. **terraform-validate** — valida o Terraform em toda PR.
-2. **deploy** — aplica `terraform apply` contra a AWS real, controlado
-   pela variável de repositório `AWS_DEPLOY_ENABLED`.
+Para remover: `terraform destroy` em cada stack.
 
-Secrets necessários: `AWS_ROLE_ARN`.
-Variável: `AWS_DEPLOY_ENABLED`.
+## Pipeline
 
-## Considerações de produção
-
-- **Rede**: usa a VPC default da conta (mesma do `infra-k8s-autoshop`).
-  Uma produção real usaria uma VPC dedicada, com sub-redes
-  públicas/privadas segregadas.
-- **State**: gerenciado localmente. Uma equipe com múltiplos
-  colaboradores usaria state remoto (ex: S3 + lock no DynamoDB).
-- **Backup**: `backup_retention_period = 1` e `skip_final_snapshot = true`.
-  Numa base de produção, esses valores seriam maiores, junto com
-  `deletion_protection = true`.
+`.github/workflows/ci-cd.yml` valida as três stacks em paralelo
+(`terraform fmt`, `init` e `validate`) em todo pull request e push para
+`develop` e `main`.
