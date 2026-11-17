@@ -34,7 +34,8 @@ flowchart LR
 - **Acesso:** as instâncias RDS não são públicas e só aceitam conexões dos
   nodes do EKS. O acesso ao DynamoDB é liberado apenas para a role do pod
   do Execution (IRSA, definida no `infra-k8s-autoshop`).
-- **Esquema:** cada serviço aplica as próprias migrations no deploy.
+- **Esquema:** OS e Billing aplicam as próprias migrations no deploy (Job
+  do Kubernetes); as tabelas do DynamoDB são criadas por esta stack.
 
 ## Como aplicar
 
